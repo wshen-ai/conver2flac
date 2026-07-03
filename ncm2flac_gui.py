@@ -15,29 +15,20 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QSpinBox, QProgressBar,
     QTextEdit, QFileDialog, QGroupBox, QMessageBox, QListWidget,
-    QListWidgetItem, QAbstractItemView, QSplitter, QComboBox
+    QListWidgetItem, QAbstractItemView, QCheckBox, QComboBox
 )
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, pyqtSlot, QObject, QSettings
 )
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent
 
-# NCM格式常量
+# ── 常量 ──────────────────────────────────────────
 CORE_KEY = bytes.fromhex('687A4852416D736F356B496E62617857')
 META_KEY = bytes.fromhex('2331346C6A6B5F215C5D2630553C2728')
 
-# 输出格式配置
 OUTPUT_FORMATS = {
-    'FLAC': {
-        'extension': '.flac',
-        'ffmpeg_args': ['-c:a', 'flac', '-compression_level', '8'],
-        'description': '无损格式',
-    },
-    'MP3': {
-        'extension': '.mp3',
-        'ffmpeg_args': None,  # 动态根据码率生成
-        'description': '有损压缩',
-    },
+    'FLAC': {'extension': '.flac', 'ffmpeg_args': ['-c:a', 'flac', '-compression_level', '8'], 'description': '无损格式'},
+    'MP3':  {'extension': '.mp3',  'ffmpeg_args': None, 'description': '有损压缩'},
 }
 
 MP3_QUALITY = {
@@ -46,8 +37,15 @@ MP3_QUALITY = {
     '低 (128kbps)': ['-c:a', 'libmp3lame', '-b:a', '128k'],
 }
 
+SEPARATION_MODES = {
+    '不分离': None,
+    '分离伴奏（去人声）': 'no_vocals',
+    '分离人声（去伴奏）': 'vocals',
+    '分离人声+伴奏（两轨都保留）': 'both',
+}
+
+# ── 工具函数 ──────────────────────────────────────
 def find_ffmpeg() -> str:
-    """查找 ffmpeg.exe：优先 EXE 同目录，其次 PATH"""
     if getattr(sys, 'frozen', False):
         exe_dir = Path(sys.executable).parent
     else:
@@ -61,8 +59,96 @@ def find_ffmpeg() -> str:
         return found
     return None
 
+def run_demucs(input_path: str, output_dir: str, log_cb=None) -> Optional[dict]:
+    """运行 Demucs 人声分离，返回 {vocals: wav_path, no_vocals: wav_path} 字典"""
+    try:
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from demucs.pretrained import get_model
+        from demucs.apply import apply_model
+
+        if log_cb:
+            log_cb("Loading Demucs model (htdemucs)...")
+
+        model = get_model(name='htdemucs')
+        model.cpu()
+        model.eval()
+
+        if log_cb:
+            log_cb(f"Loading audio: {Path(input_path).name}")
+
+        data, sr = sf.read(input_path)
+        # 转立体声
+        if data.ndim == 1:
+            data = np.column_stack([data, data])
+        wav = torch.from_numpy(data.T).float().unsqueeze(0)  # (1, 2, T)
+
+        if log_cb:
+            log_cb("Running AI separation (this may take a while)...")
+
+        with torch.no_grad():
+            sources = apply_model(model, wav, device='cpu')[0]
+
+        # sources shape: (4, 2, T) -> drums, bass, other, vocals
+        # 合成伴奏 = drums + bass + other
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        result = {}
+
+        # 保存人声
+        vocals_np = sources[3].numpy().T
+        max_v = np.abs(vocals_np).max()
+        if max_v > 0:
+            vocals_np = vocals_np / max_v * 0.95
+        vocals_path = out_dir / 'vocals.wav'
+        sf.write(str(vocals_path), (vocals_np * 32767).astype(np.int16), sr)
+        result['vocals'] = str(vocals_path)
+
+        # 合成伴奏 = drums(0) + bass(1) + other(2)
+        no_vocals_np = (sources[0] + sources[1] + sources[2]).numpy().T
+        max_nv = np.abs(no_vocals_np).max()
+        if max_nv > 0:
+            no_vocals_np = no_vocals_np / max_nv * 0.95
+        no_vocals_path = out_dir / 'no_vocals.wav'
+        sf.write(str(no_vocals_path), (no_vocals_np * 32767).astype(np.int16), sr)
+        result['no_vocals'] = str(no_vocals_path)
+
+        if log_cb:
+            log_cb("Separation complete!")
+        return result
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Demucs failed: {str(e)}")
+        return None
+
+def convert_audio_file(input_path: str, output_path: str, fmt: str, mp3_quality: str, log_cb=None) -> bool:
+    """用 ffmpeg 把音频文件转成目标格式"""
+    try:
+        ffmpeg_path = find_ffmpeg()
+        if not ffmpeg_path:
+            if log_cb:
+                log_cb("ERROR: ffmpeg not found!")
+            return False
+        if fmt == 'FLAC':
+            args = ['-c:a', 'flac', '-compression_level', '8']
+        else:
+            args = MP3_QUALITY[mp3_quality]
+        cmd = [ffmpeg_path, '-y', '-i', input_path] + args + ['-v', 'error', output_path]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            if log_cb:
+                log_cb(f"FFmpeg error: {proc.stderr[:200]}")
+            return False
+        return True
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Conversion error: {str(e)}")
+        return False
+
+# ── NCM 解密器 ────────────────────────────────────
 class NCMDecrypter:
-    """NCM文件解密器"""
     def __init__(self, file_path: str):
         self.file_path = Path(file_path)
         self.file_size = self.file_path.stat().st_size
@@ -146,6 +232,7 @@ class NCMDecrypter:
                     progress_cb(processed, total_audio)
         return bytes(audio_data)
 
+# ── 转换工作线程 ──────────────────────────────────
 class ConversionWorker(QObject):
     progress_updated = pyqtSignal(int, int)
     file_progress = pyqtSignal(str, int, int)
@@ -155,13 +242,14 @@ class ConversionWorker(QObject):
     finished = pyqtSignal(int, int)
 
     def __init__(self, input_files: List[Path], output_dir: Path, max_concurrent: int,
-                 output_format: str, mp3_quality: str):
+                 output_format: str, mp3_quality: str, separation_mode: str):
         super().__init__()
         self.input_files = input_files
         self.output_dir = output_dir
         self.max_concurrent = max_concurrent
         self.output_format = output_format
         self.mp3_quality = mp3_quality
+        self.separation_mode = separation_mode
         self.is_running = True
 
     def get_output_extension(self) -> str:
@@ -175,31 +263,25 @@ class ConversionWorker(QObject):
 
     async def convert_audio(self, input_data: bytes, input_format: str, output_path: Path) -> bool:
         try:
-            # 如果输出格式是FLAC且输入已经是FLAC，直接写入
             if self.output_format == 'FLAC' and input_format == 'flac':
                 with open(output_path, 'wb') as f:
                     f.write(input_data)
                 return True
-
-            # 创建临时文件
             temp_file = output_path.with_suffix(f'.{input_format}')
             with open(temp_file, 'wb') as f:
                 f.write(input_data)
-
             ffmpeg_path = find_ffmpeg()
             if not ffmpeg_path:
-                self.log_message.emit("ERROR: ffmpeg not found! Please place ffmpeg.exe in the same folder.")
+                self.log_message.emit("ERROR: ffmpeg not found!")
                 return False
-
             cmd = [ffmpeg_path, '-y', '-i', str(temp_file)]
             cmd.extend(self.get_ffmpeg_args())
             cmd.extend(['-v', 'error', str(output_path)])
-
             process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = await process.communicate()
             temp_file.unlink()
             if process.returncode != 0:
-                self.log_message.emit(f"FFmpeg error: {stderr.decode('utf-8', errors='ignore')}")
+                self.log_message.emit(f"FFmpeg error: {stderr.decode('utf-8', errors='ignore')[:200]}")
                 return False
             return True
         except Exception as e:
@@ -207,7 +289,6 @@ class ConversionWorker(QObject):
             return False
 
     def write_metadata(self, output_path: Path, metadata: dict, cover_data: bytes):
-        """写入元数据到输出文件"""
         ext = self.get_output_extension()
         if ext == '.flac':
             audio = FLAC(output_path)
@@ -255,6 +336,55 @@ class ConversionWorker(QObject):
                 audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
             audio.save()
 
+    def do_separation(self, converted_path: Path, output_stem: str) -> List[str]:
+        """对转换后的文件做人声分离，返回生成的文件路径列表"""
+        self.log_message.emit(f"Separating vocals: {converted_path.name}...")
+        sep_mode = SEPARATION_MODES.get(self.separation_mode)
+        if not sep_mode:
+            return []
+
+        # 用临时目录放 Demucs 输出
+        import tempfile
+        tmp_sep = tempfile.mkdtemp(prefix='ncm_sep_')
+        try:
+            result = run_demucs(str(converted_path), tmp_sep, self.log_message.emit)
+            if not result:
+                self.log_message.emit("Vocal separation failed, skipping.")
+                return []
+
+            ext = self.get_output_extension()
+            produced = []
+
+            # 根据选择的模式决定输出哪些轨
+            stems_to_convert = []
+            if sep_mode == 'no_vocals':
+                stems_to_convert = [('no_vocals', f'{output_stem} - 伴奏')]
+            elif sep_mode == 'vocals':
+                stems_to_convert = [('vocals', f'{output_stem} - 人声')]
+            elif sep_mode == 'both':
+                stems_to_convert = [
+                    ('no_vocals', f'{output_stem} - 伴奏'),
+                    ('vocals', f'{output_stem} - 人声'),
+                ]
+
+            for stem_key, stem_label in stems_to_convert:
+                wav_path = result.get(stem_key)
+                if not wav_path:
+                    continue
+                out_path = self.output_dir / f'{stem_label}{ext}'
+                if convert_audio_file(wav_path, str(out_path), self.output_format, self.mp3_quality, self.log_message.emit):
+                    produced.append(str(out_path))
+                    self.log_message.emit(f"  -> {out_path.name}")
+
+            return produced
+        finally:
+            # 清理临时 Demucs 输出
+            import shutil
+            try:
+                shutil.rmtree(tmp_sep, ignore_errors=True)
+            except:
+                pass
+
     async def process_file(self, file_path: Path) -> Tuple[bool, str, Optional[str]]:
         try:
             self.file_started.emit(file_path.name)
@@ -287,6 +417,12 @@ class ConversionWorker(QObject):
             if success and metadata:
                 self.write_metadata(output_path, metadata, cover_data)
                 self.log_message.emit(f"Success: {file_path.name} -> {output_name}")
+
+                # 人声分离（同步执行，因为是 CPU 密集型）
+                if self.separation_mode != '不分离':
+                    output_stem = output_name.rsplit('.', 1)[0]
+                    self.do_separation(output_path, output_stem)
+
                 return True, file_path.name, str(output_path)
             else:
                 self.log_message.emit(f"Failed: {file_path.name}")
@@ -327,6 +463,7 @@ class ConversionWorker(QObject):
     def stop(self):
         self.is_running = False
 
+# ── 拖拽列表控件 ──────────────────────────────────
 class DropListWidget(QListWidget):
     files_dropped = pyqtSignal(list)
     def __init__(self, parent=None):
@@ -359,6 +496,7 @@ class DropListWidget(QListWidget):
         else:
             super().dropEvent(event)
 
+# ── 主窗口 ────────────────────────────────────────
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -371,12 +509,12 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("NCM to FLAC/MP3 Converter")
-        self.setGeometry(100, 100, 800, 650)
+        self.setGeometry(100, 100, 800, 680)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        # 目录选择区域
+        # ── 目录选择 ──
         dir_group = QGroupBox("Directories")
         dir_layout = QVBoxLayout(dir_group)
         input_layout = QHBoxLayout()
@@ -397,18 +535,18 @@ class MainWindow(QMainWindow):
         dir_layout.addLayout(output_layout)
         main_layout.addWidget(dir_group)
 
-        # 设置区域
+        # ── 设置 ──
         settings_group = QGroupBox("Settings")
         settings_layout = QHBoxLayout(settings_group)
 
-        settings_layout.addWidget(QLabel("Output Format:"))
+        settings_layout.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
-        self.format_combo.addItem("FLAC - 无损格式")
-        self.format_combo.addItem("MP3 - 有损压缩")
+        self.format_combo.addItem("FLAC - 无损")
+        self.format_combo.addItem("MP3 - 有损")
         self.format_combo.currentIndexChanged.connect(self.on_format_changed)
         settings_layout.addWidget(self.format_combo)
 
-        settings_layout.addWidget(QLabel("MP3 Quality:"))
+        settings_layout.addWidget(QLabel("MP3:"))
         self.quality_combo = QComboBox()
         self.quality_combo.addItem("高 (320kbps)")
         self.quality_combo.addItem("中 (192kbps)")
@@ -417,8 +555,8 @@ class MainWindow(QMainWindow):
 
         settings_layout.addWidget(QLabel("Concurrent:"))
         self.concurrent_spin = QSpinBox()
-        self.concurrent_spin.setRange(1, 16)
-        self.concurrent_spin.setValue(3)
+        self.concurrent_spin.setRange(1, 8)
+        self.concurrent_spin.setValue(2)
         settings_layout.addWidget(self.concurrent_spin)
 
         settings_layout.addStretch()
@@ -430,7 +568,19 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(self.clear_files_btn)
         main_layout.addWidget(settings_group)
 
-        # 文件列表区域
+        # ── 人声分离 ──
+        sep_group = QGroupBox("Vocal Separation (powered by Demucs AI)")
+        sep_layout = QHBoxLayout(sep_group)
+        sep_layout.addWidget(QLabel("Mode:"))
+        self.sep_combo = QComboBox()
+        for mode in SEPARATION_MODES:
+            self.sep_combo.addItem(mode)
+        sep_layout.addWidget(self.sep_combo)
+        sep_layout.addStretch()
+        sep_layout.addWidget(QLabel("⚠ CPU mode, 1 min per min of audio"))
+        main_layout.addWidget(sep_group)
+
+        # ── 文件列表 ──
         list_group = QGroupBox("Files to Convert (0 files)")
         list_layout = QVBoxLayout(list_group)
         self.file_list = DropListWidget()
@@ -438,7 +588,7 @@ class MainWindow(QMainWindow):
         list_layout.addWidget(self.file_list)
         main_layout.addWidget(list_group)
 
-        # 进度区域
+        # ── 进度 ──
         progress_group = QGroupBox("Progress")
         progress_layout = QVBoxLayout(progress_group)
         self.progress_bar = QProgressBar()
@@ -448,7 +598,7 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.status_label)
         main_layout.addWidget(progress_group)
 
-        # 日志区域
+        # ── 日志 ──
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout(log_group)
         self.log_text = QTextEdit()
@@ -457,7 +607,7 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_text)
         main_layout.addWidget(log_group)
 
-        # 按钮区域
+        # ── 按钮 ──
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         self.start_btn = QPushButton("Start Conversion")
@@ -469,37 +619,32 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.stop_btn)
         main_layout.addLayout(btn_layout)
 
-        # 初始状态：FLAC 时禁用质量选择
         self.quality_combo.setEnabled(False)
 
     def on_format_changed(self, index):
-        """格式切换时：MP3 启用质量选择，FLAC 禁用"""
-        self.quality_combo.setEnabled(index == 1)  # MP3 = index 1
+        self.quality_combo.setEnabled(index == 1)
 
     def get_selected_format(self) -> str:
-        if self.format_combo.currentIndex() == 0:
-            return 'FLAC'
-        return 'MP3'
+        return 'MP3' if self.format_combo.currentIndex() == 1 else 'FLAC'
 
     def get_selected_quality(self) -> str:
         return self.quality_combo.currentText()
 
+    def get_selected_separation(self) -> str:
+        return self.sep_combo.currentText()
+
     def load_settings(self):
-        input_dir = self.settings.value("input_dir", "")
-        output_dir = self.settings.value("output_dir", "")
-        max_concurrent = self.settings.value("max_concurrent", 3, type=int)
-        output_format = self.settings.value("output_format", "FLAC")
-        mp3_quality = self.settings.value("mp3_quality", "高 (320kbps)")
-        if input_dir:
-            self.input_path_edit.setText(input_dir)
-        if output_dir:
-            self.output_path_edit.setText(output_dir)
-        self.concurrent_spin.setValue(max_concurrent)
-        if output_format == 'MP3':
+        self.input_path_edit.setText(self.settings.value("input_dir", ""))
+        self.output_path_edit.setText(self.settings.value("output_dir", ""))
+        self.concurrent_spin.setValue(self.settings.value("max_concurrent", 2, type=int))
+        if self.settings.value("output_format", "FLAC") == 'MP3':
             self.format_combo.setCurrentIndex(1)
-        idx = self.quality_combo.findText(mp3_quality)
+        idx = self.quality_combo.findText(self.settings.value("mp3_quality", "高 (320kbps)"))
         if idx >= 0:
             self.quality_combo.setCurrentIndex(idx)
+        sep_idx = self.sep_combo.findText(self.settings.value("separation_mode", "不分离"))
+        if sep_idx >= 0:
+            self.sep_combo.setCurrentIndex(sep_idx)
 
     def save_settings(self):
         self.settings.setValue("input_dir", self.input_path_edit.text())
@@ -507,6 +652,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("max_concurrent", self.concurrent_spin.value())
         self.settings.setValue("output_format", self.get_selected_format())
         self.settings.setValue("mp3_quality", self.get_selected_quality())
+        self.settings.setValue("separation_mode", self.get_selected_separation())
 
     def browse_input(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Input Directory")
@@ -522,8 +668,7 @@ class MainWindow(QMainWindow):
     def scan_input_dir(self):
         input_dir = Path(self.input_path_edit.text())
         if input_dir.exists():
-            ncm_files = list(input_dir.glob('*.ncm'))
-            self.add_files_to_list(ncm_files)
+            self.add_files_to_list(list(input_dir.glob('*.ncm')))
 
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select NCM Files", "", "NCM Files (*.ncm)")
@@ -573,14 +718,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         fmt = self.get_selected_format()
         quality = self.get_selected_quality()
-        self.status_label.setText(f"Converting to {fmt}...")
+        sep = self.get_selected_separation()
+        self.status_label.setText(f"Converting to {fmt}..." + (" + vocal separation" if sep != '不分离' else ""))
         self.thread = QThread()
         self.worker = ConversionWorker(
-            self.input_files.copy(),
-            output_dir,
-            self.concurrent_spin.value(),
-            fmt,
-            quality,
+            self.input_files.copy(), output_dir,
+            self.concurrent_spin.value(), fmt, quality, sep,
         )
         self.worker.moveToThread(self.thread)
         self.worker.progress_updated.connect(self.on_progress_updated)
@@ -622,9 +765,13 @@ class MainWindow(QMainWindow):
         self.clear_files_btn.setEnabled(True)
         total = success_count + fail_count
         fmt = self.get_selected_format()
-        self.status_label.setText(f"Completed: {success_count}/{total} succeeded, {fail_count} failed ({fmt})")
+        sep = self.get_selected_separation()
+        msg = f"Completed: {success_count}/{total} succeeded, {fail_count} failed ({fmt})"
+        if sep != '不分离':
+            msg += " + vocal separation"
+        self.status_label.setText(msg)
         QMessageBox.information(self, "Conversion Complete",
-            f"Conversion finished!\n\nFormat: {fmt}\nSuccess: {success_count}\nFailed: {fail_count}")
+            f"Conversion finished!\n\nFormat: {fmt}\nVocal Separation: {sep}\nSuccess: {success_count}\nFailed: {fail_count}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
