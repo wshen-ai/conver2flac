@@ -1,0 +1,7 @@
+click==8.1.7
+rich==13.7.1
+mutagen==1.47.0
+pycryptodome==3.20.0
+tqdm==4.66.4
+PyQt5==5.15.10
+pyinstaller
