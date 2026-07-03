@@ -22,7 +22,8 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QDragEnterEvent, QDropEvent
 
-# ── 常量 ──────────────────────────────────────────
+# 支持的输入格式
+AUDIO_EXTENSIONS = {'.ncm', '.wav', '.flac', '.mp3', '.m4a', '.ogg', '.wma', '.aac', '.opus', '.ape', '.wv', '.aiff', '.aif'}
 CORE_KEY = bytes.fromhex('687A4852416D736F356B496E62617857')
 META_KEY = bytes.fromhex('2331346C6A6B5F215C5D2630553C2728')
 
@@ -388,41 +389,61 @@ class ConversionWorker(QObject):
     async def process_file(self, file_path: Path) -> Tuple[bool, str, Optional[str]]:
         try:
             self.file_started.emit(file_path.name)
-            self.log_message.emit(f"Decrypting: {file_path.name}")
-            def on_progress(processed, total):
-                self.file_progress.emit(file_path.name, processed, total)
-            def is_cancelled():
-                return not self.is_running
-            decrypter = NCMDecrypter(str(file_path))
-            audio_data, metadata, cover_data, audio_format = decrypter.decrypt(on_progress, is_cancelled)
-            self.log_message.emit(f"Converting to {self.output_format}: {file_path.name}")
+            is_ncm = file_path.suffix.lower() == '.ncm'
             ext = self.get_output_extension()
-            if metadata and 'musicName' in metadata and 'artist' in metadata:
-                artists = metadata['artist']
-                if isinstance(artists, list) and len(artists) > 0:
-                    if isinstance(artists[0], list):
-                        artist_str = '/'.join(a[0] for a in artists)
-                    elif isinstance(artists[0], dict):
-                        artist_str = '/'.join(a.get('name', str(a)) for a in artists)
+
+            if is_ncm:
+                self.log_message.emit(f"Decrypting: {file_path.name}")
+                def on_progress(processed, total):
+                    self.file_progress.emit(file_path.name, processed, total)
+                def is_cancelled():
+                    return not self.is_running
+                decrypter = NCMDecrypter(str(file_path))
+                audio_data, metadata, cover_data, audio_format = decrypter.decrypt(on_progress, is_cancelled)
+                self.log_message.emit(f"Converting to {self.output_format}: {file_path.name}")
+                if metadata and 'musicName' in metadata and 'artist' in metadata:
+                    artists = metadata['artist']
+                    artist_str = ''
+                    if isinstance(artists, list) and len(artists) > 0:
+                        if isinstance(artists[0], list):
+                            artist_str = '/'.join(a[0] for a in artists)
+                        elif isinstance(artists[0], dict):
+                            artist_str = '/'.join(a.get('name', str(a)) for a in artists)
+                        else:
+                            artist_str = str(artists[0])
                     else:
-                        artist_str = str(artists[0])
+                        artist_str = str(artists)
+                    output_name = f"{artist_str} - {metadata['musicName']}{ext}"
+                    output_name = "".join(c for c in output_name if c not in '<>:"/\|?*')
                 else:
-                    artist_str = str(artists)
-                output_name = f"{artist_str} - {metadata['musicName']}{ext}"
-                output_name = "".join(c for c in output_name if c not in '<>:"/\\|?*')
+                    output_name = file_path.stem + ext
+                output_path = self.output_dir / output_name
+                success = await self.convert_audio(audio_data, audio_format, output_path)
+                if success and metadata:
+                    self.write_metadata(output_path, metadata, cover_data)
             else:
                 output_name = file_path.stem + ext
-            output_path = self.output_dir / output_name
-            success = await self.convert_audio(audio_data, audio_format, output_path)
-            if success and metadata:
-                self.write_metadata(output_path, metadata, cover_data)
-                self.log_message.emit(f"Success: {file_path.name} -> {output_name}")
+                output_path = self.output_dir / output_name
+                self.log_message.emit(f"Converting: {file_path.name} -> {output_name}")
+                ffmpeg_path = find_ffmpeg()
+                if not ffmpeg_path:
+                    self.log_message.emit("ERROR: ffmpeg not found!")
+                    return False, file_path.name, None
+                args = ['-c:a', 'flac', '-compression_level', '8'] if self.output_format == 'FLAC' else MP3_QUALITY[self.mp3_quality]
+                cmd = [ffmpeg_path, '-y', '-i', str(file_path)] + args + ['-v', 'error', str(output_path)]
+                process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = await process.communicate()
+                success = process.returncode == 0
+                if not success:
+                    self.log_message.emit(f"FFmpeg error: {stderr.decode('utf-8', errors='ignore')[:200]}")
+                metadata = {}
+                cover_data = None
 
-                # 人声分离（同步执行，因为是 CPU 密集型）
+            if success:
+                self.log_message.emit(f"Success: {file_path.name} -> {output_name}")
                 if self.separation_mode != '不分离':
                     output_stem = output_name.rsplit('.', 1)[0]
                     self.do_separation(output_path, output_stem)
-
                 return True, file_path.name, str(output_path)
             else:
                 self.log_message.emit(f"Failed: {file_path.name}")
@@ -488,10 +509,11 @@ class DropListWidget(QListWidget):
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     path = Path(url.toLocalFile())
-                    if path.is_file() and path.suffix.lower() == '.ncm':
+                    if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS:
                         files.append(path)
                     elif path.is_dir():
-                        files.extend(path.rglob('*.ncm'))
+                        for ext in AUDIO_EXTENSIONS:
+                            files.extend(path.rglob(f'*{ext}'))
             self.files_dropped.emit(files)
         else:
             super().dropEvent(event)
@@ -508,7 +530,7 @@ class MainWindow(QMainWindow):
         self.load_settings()
 
     def init_ui(self):
-        self.setWindowTitle("NCM to FLAC/MP3 Converter")
+        self.setWindowTitle("Universal Audio Converter (NCM/FLAC/MP3/WAV/M4A/OGG)")
         self.setGeometry(100, 100, 800, 680)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -560,7 +582,7 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(self.concurrent_spin)
 
         settings_layout.addStretch()
-        self.add_files_btn = QPushButton("Add NCM Files")
+        self.add_files_btn = QPushButton("Add Audio Files")
         self.add_files_btn.clicked.connect(self.add_files)
         settings_layout.addWidget(self.add_files_btn)
         self.clear_files_btn = QPushButton("Clear List")
@@ -668,16 +690,19 @@ class MainWindow(QMainWindow):
     def scan_input_dir(self):
         input_dir = Path(self.input_path_edit.text())
         if input_dir.exists():
-            self.add_files_to_list(list(input_dir.glob('*.ncm')))
+            for ext in AUDIO_EXTENSIONS:
+                self.add_files_to_list(list(input_dir.glob(f'*{ext}')))
 
     def add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Select NCM Files", "", "NCM Files (*.ncm)")
+        ext_list = ' '.join(f'*{e}' for e in sorted(AUDIO_EXTENSIONS))
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Audio Files", "",
+            f"All Audio ({ext_list});;NCM Files (*.ncm);;WAV (*.wav);;FLAC (*.flac);;MP3 (*.mp3);;M4A (*.m4a);;OGG (*.ogg);;All Files (*.*)")
         if files:
             self.add_files_to_list([Path(f) for f in files])
 
     def add_files_to_list(self, files):
         for f in files:
-            if f.suffix.lower() == '.ncm' and f not in self.input_files:
+            if f.suffix.lower() in AUDIO_EXTENSIONS and f not in self.input_files:
                 self.input_files.append(f)
                 item = QListWidgetItem(f.name)
                 item.setToolTip(str(f))
@@ -700,7 +725,7 @@ class MainWindow(QMainWindow):
 
     def start_conversion(self):
         if not self.input_files:
-            QMessageBox.warning(self, "Warning", "No NCM files selected!")
+            QMessageBox.warning(self, "Warning", "No audio files selected!")
             return
         output_dir = Path(self.output_path_edit.text())
         if not output_dir.exists():
