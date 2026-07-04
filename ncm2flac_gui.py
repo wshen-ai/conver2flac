@@ -585,7 +585,10 @@ class MainWindow(QMainWindow):
         self.add_files_btn = QPushButton("Add Audio Files")
         self.add_files_btn.clicked.connect(self.add_files)
         settings_layout.addWidget(self.add_files_btn)
-        self.clear_files_btn = QPushButton("Clear List")
+        self.remove_files_btn = QPushButton("Remove Selected")
+        self.remove_files_btn.clicked.connect(self.remove_selected_files)
+        settings_layout.addWidget(self.remove_files_btn)
+        self.clear_files_btn = QPushButton("Clear All")
         self.clear_files_btn.clicked.connect(self.clear_files)
         settings_layout.addWidget(self.clear_files_btn)
         main_layout.addWidget(settings_group)
@@ -715,6 +718,18 @@ class MainWindow(QMainWindow):
     def clear_files(self):
         self.input_files.clear()
         self.file_list.clear()
+        self.update_file_count()
+
+    def remove_selected_files(self):
+        selected = self.file_list.selectedItems()
+        if not selected:
+            return
+        # 从后往前删，避免索引偏移
+        rows = sorted(set(self.file_list.row(item) for item in selected), reverse=True)
+        for row in rows:
+            self.file_list.takeItem(row)
+            if row < len(self.input_files):
+                self.input_files.pop(row)
         self.update_file_count()
 
     def update_file_count(self):
