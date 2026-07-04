@@ -1,0 +1,53 @@
+name: Build NCM2FLAC Windows Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build_win:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build EXE with PyInstaller
+        run: |
+          python -m PyInstaller `
+            --clean --onefile --windowed `
+            --name "NCM2FLAC" `
+            --runtime-hook hook-torch-preload.py `
+            --hidden-import PyQt5.QtCore `
+            --hidden-import PyQt5.QtGui `
+            --hidden-import PyQt5.QtWidgets `
+            --hidden-import Crypto.Cipher.AES `
+            --hidden-import Crypto.Util.Padding `
+            --hidden-import mutagen.flac `
+            --hidden-import mutagen.mp3 `
+            --hidden-import mutagen.id3 `
+            ncm2flac_gui.py
+
+      # GitHub Windows虚拟机自带7z，路径固定无需安装
+      - name: Split archive into 90MB volumes
+        run: |
+          cd dist
+          "C:\Program Files\7-Zip\7z.exe" a -v90m NCM2FLAC.zip NCM2FLAC.exe
+
+      - name: Upload split archives to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/NCM2FLAC.zip.*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
