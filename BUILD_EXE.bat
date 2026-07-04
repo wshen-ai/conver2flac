@@ -4,13 +4,13 @@ setlocal enabledelayedexpansion
 
 echo ==============================================
 echo        NCM2FLAC - Standalone EXE Builder
+echo      (with torch preload DLL hook)
 echo ==============================================
 echo.
 
-:: 找系统 Python（带 pip 的，不是 hermes venv）
+:: 找系统 Python（带 pip 的）
 set "PYTHON_EXE="
 for %%p in (
-    "C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe"
     "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
     "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
     "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
@@ -42,16 +42,16 @@ if %errorlevel% neq 0 (
 echo.
 echo Cleaning old builds...
 rmdir /s /q build dist 2>nul
-del /q NCM2FLAC.spec 2>nul
+del /q NCM2FLAC*.spec 2>nul
 
-:: 打包 EXE（--windowed 无控制台窗口）
+:: 打包 EXE（--windowed 无控制台窗口，含 torch DLL 预加载钩子）
 echo.
 echo Building NCM2FLAC.exe...
 %PYTHON_EXE% -m PyInstaller ^
     --onefile ^
     --windowed ^
     --name "NCM2FLAC" ^
-    --add-data "ncm2flac.py;." ^
+    --runtime-hook hook-torch-preload.py ^
     --hidden-import PyQt5 ^
     --hidden-import PyQt5.QtCore ^
     --hidden-import PyQt5.QtGui ^
@@ -69,32 +69,6 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: 查找 ffmpeg.exe
-set "FFMPEG_SRC="
-for %%f in (
-    "%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-*\bin\ffmpeg.exe"
-    "C:\ffmpeg\bin\ffmpeg.exe"
-    "%ProgramFiles%\ffmpeg\bin\ffmpeg.exe"
-) do (
-    if exist "%%f" (
-        set "FFMPEG_SRC=%%~dpf"
-        goto :found_ffmpeg
-    )
-)
-echo.
-echo [WARNING] ffmpeg.exe not found! EXE will be built without ffmpeg.
-echo The converter will still work if ffmpeg is installed on the target machine.
-echo.
-goto :done
-
-:found_ffmpeg
-echo.
-echo Copying ffmpeg to dist folder...
-copy /y "%FFMPEG_SRC%ffmpeg.exe" dist\ >nul
-copy /y "%FFMPEG_SRC%ffprobe.exe" dist\ >nul 2>nul
-echo ffmpeg.exe copied to dist\
-
-:done
 echo.
 echo ==============================================
 echo   Build complete!
