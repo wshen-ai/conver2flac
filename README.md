@@ -80,6 +80,37 @@ pip install -r requirements.txt
 python ncm2flac_gui.py
 ```
 
+### 方式三：源码打包 EXE
+
+```bash
+pip install pyinstaller
+python -m PyInstaller \
+    --clean --onefile --windowed \
+    --name "NCM2FLAC" \
+    --runtime-hook hook-torch-preload.py \
+    --hidden-import PyQt5.QtCore \
+    --hidden-import PyQt5.QtGui \
+    --hidden-import PyQt5.QtWidgets \
+    --hidden-import Crypto.Cipher.AES \
+    --hidden-import Crypto.Util.Padding \
+    --hidden-import mutagen.flac \
+    --hidden-import mutagen.mp3 \
+    --hidden-import mutagen.id3 \
+    ncm2flac_gui.py
+```
+
+产物在 `dist/NCM2FLAC.exe`。
+
+> **Windows 用户注意：** 含 torch + PyQt5 的 EXE 打包后可能遇到 c10.dll 初始化失败（WinError 1114）。这是因为 PyInstaller 预加载 Qt DLL 时与 torch 冲突。`--runtime-hook hook-torch-preload.py` 通过 Windows API 强制预加载 c10.dll 来解决。拉源码打包时**必须带上这个参数**。
+
+或直接跑：
+
+```bat
+BUILD_EXE.bat
+```
+
+脚本会自动检测系统 ffmpeg 并复制到 `dist\` 目录。**EXE 运行时需要同目录有 ffmpeg.exe，或系统 PATH 可找到 ffmpeg。**
+
 ## 技术栈
 
 - **GUI**: PyQt5

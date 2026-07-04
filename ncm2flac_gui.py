@@ -52,13 +52,24 @@ SEPARATION_MODES = {
 
 # ── 工具函数 ──────────────────────────────────────
 def find_ffmpeg() -> str:
+    # 1. PyInstaller bundled: search sys._MEIPASS (temp extraction dir)
     if getattr(sys, 'frozen', False):
+        # --add-binary 把 ffmpeg.exe 打到 MEIPASS 根目录
+        bundled = Path(sys._MEIPASS) / 'ffmpeg.exe'
+        if bundled.exists():
+            return str(bundled)
+        # 2. Fallback: same directory as the EXE
         exe_dir = Path(sys.executable).parent
+        local_ffmpeg = exe_dir / 'ffmpeg.exe'
+        if local_ffmpeg.exists():
+            return str(local_ffmpeg)
     else:
+        # 源码运行时：同目录
         exe_dir = Path(__file__).parent
-    local_ffmpeg = exe_dir / 'ffmpeg.exe'
-    if local_ffmpeg.exists():
-        return str(local_ffmpeg)
+        local_ffmpeg = exe_dir / 'ffmpeg.exe'
+        if local_ffmpeg.exists():
+            return str(local_ffmpeg)
+    # 3. 系统 PATH
     import shutil
     found = shutil.which('ffmpeg')
     if found:
