@@ -6,6 +6,11 @@ import struct
 import subprocess
 from pathlib import Path
 from typing import List, Tuple, Optional
+
+# 必须在 PyQt5 之前导入 torch，否则 Windows 上 DLL 冲突
+# (PyQt5 捆绑的 OpenSSL/MSVC DLL 会阻塞 torch 的 c10.dll 加载)
+import torch
+
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from mutagen.flac import FLAC, Picture
@@ -136,7 +141,7 @@ def convert_audio_file(input_path: str, output_path: str, fmt: str, mp3_quality:
             args = ['-c:a', 'flac', '-compression_level', '8']
         else:
             args = MP3_QUALITY[mp3_quality]
-        cmd = [ffmpeg_path, '-y', '-i', input_path] + args + ['-v', 'error', output_path]
+        cmd = [ffmpeg_path, '-y', '-vn', '-i', input_path] + args + ['-v', 'error', output_path]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
             if log_cb:
@@ -275,7 +280,7 @@ class ConversionWorker(QObject):
             if not ffmpeg_path:
                 self.log_message.emit("ERROR: ffmpeg not found!")
                 return False
-            cmd = [ffmpeg_path, '-y', '-i', str(temp_file)]
+            cmd = [ffmpeg_path, '-y', '-vn', '-i', str(temp_file)]
             cmd.extend(self.get_ffmpeg_args())
             cmd.extend(['-v', 'error', str(output_path)])
             process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -430,12 +435,34 @@ class ConversionWorker(QObject):
                     self.log_message.emit("ERROR: ffmpeg not found!")
                     return False, file_path.name, None
                 args = ['-c:a', 'flac', '-compression_level', '8'] if self.output_format == 'FLAC' else MP3_QUALITY[self.mp3_quality]
-                cmd = [ffmpeg_path, '-y', '-i', str(file_path)] + args + ['-v', 'error', str(output_path)]
+
+                # 如果输入输出路径相同，先写到临时文件再覆盖
+                need_temp = output_path.resolve() == file_path.resolve()
+                conv_target = output_path
+                if need_temp:
+                    import tempfile
+                    tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext, dir=str(self.output_dir))
+                    os.close(tmp_fd)
+                    conv_target = Path(tmp_path)
+                    self.log_message.emit(f"  Input=Output, using temp file first")
+
+                cmd = [ffmpeg_path, '-y', '-vn', '-i', str(file_path)] + args + ['-v', 'error', str(conv_target)]
                 process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 stdout, stderr = await process.communicate()
                 success = process.returncode == 0
+
+                if success and need_temp:
+                    # 临时文件转正
+                    try:
+                        conv_target.replace(output_path)
+                    except Exception as e:
+                        self.log_message.emit(f"  Replace failed: {e}, keeping temp at {tmp_path}")
+                        success = False
+
                 if not success:
                     self.log_message.emit(f"FFmpeg error: {stderr.decode('utf-8', errors='ignore')[:200]}")
+                    if need_temp and conv_target.exists():
+                        conv_target.unlink()
                 metadata = {}
                 cover_data = None
 
