@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 
 echo ==============================================
 echo        NCM2FLAC - Standalone EXE Builder
-echo      (with torch preload DLL hook)
+echo    (torch DLL fix + ffmpeg + Demucs + numpy)
 echo ==============================================
 echo.
 
@@ -28,6 +28,17 @@ exit /b 1
 :found_python
 echo Python found: %PYTHON_EXE%
 
+:: 检查 ffmpeg.exe
+echo.
+if not exist "ffmpeg.exe" (
+    echo [WARNING] ffmpeg.exe not found in project root!
+    echo Download from: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+    echo Extract bin\ffmpeg.exe to this directory, then re-run.
+    pause
+    exit /b 1
+)
+echo ffmpeg.exe found.
+
 :: 安装 PyInstaller
 echo.
 echo Installing PyInstaller...
@@ -41,10 +52,10 @@ if %errorlevel% neq 0 (
 :: 清理旧构建
 echo.
 echo Cleaning old builds...
-rmdir /s /q build dist 2>nul
+rmdir /s /q build 2>nul
 del /q NCM2FLAC*.spec 2>nul
 
-:: 打包 EXE（--windowed 无控制台窗口，含 torch DLL 预加载钩子）
+:: 打包 EXE
 echo.
 echo Building NCM2FLAC.exe...
 %PYTHON_EXE% -m PyInstaller ^
@@ -52,6 +63,9 @@ echo Building NCM2FLAC.exe...
     --windowed ^
     --name "NCM2FLAC" ^
     --runtime-hook hook-torch-preload.py ^
+    --add-binary "ffmpeg.exe;." ^
+    --collect-data demucs ^
+    --collect-all numpy ^
     --hidden-import PyQt5 ^
     --hidden-import PyQt5.QtCore ^
     --hidden-import PyQt5.QtGui ^
@@ -75,8 +89,8 @@ echo   Build complete!
 echo   EXE location: dist\NCM2FLAC.exe
 echo ==============================================
 echo.
-echo To use on another machine:
-echo   1. Copy the entire "dist" folder
-echo   2. Double-click NCM2FLAC.exe
+echo To release:
+echo   1. Call gh release create vX.X dist\NCM2FLAC.exe
+echo   2. Or drag into GitHub Release page in browser
 echo.
 pause

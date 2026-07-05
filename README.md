@@ -83,11 +83,21 @@ python ncm2flac_gui.py
 ### 方式三：源码打包 EXE
 
 ```bash
+# 1. 准备 ffmpeg（必需）
+#    从 https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip 下载
+#    解压后将 bin/ffmpeg.exe 放到项目根目录
+
+# 2. 安装打包工具
 pip install pyinstaller
+
+# 3. 打包
 python -m PyInstaller \
     --clean --onefile --windowed \
     --name "NCM2FLAC" \
     --runtime-hook hook-torch-preload.py \
+    --add-binary "ffmpeg.exe;." \
+    --collect-data demucs \
+    --collect-all numpy \
     --hidden-import PyQt5.QtCore \
     --hidden-import PyQt5.QtGui \
     --hidden-import PyQt5.QtWidgets \
@@ -99,9 +109,13 @@ python -m PyInstaller \
     ncm2flac_gui.py
 ```
 
-产物在 `dist/NCM2FLAC.exe`。
+> **各参数说明：**
+> - `--add-binary "ffmpeg.exe;."` — 将 ffmpeg 嵌入 EXE，用户无需单独安装
+> - `--collect-data demucs` — 打包 Meta Demucs 模型数据文件（否则 AI 分离报错）
+> - `--collect-all numpy` — 打包 numpy 所有 C 扩展（否则 `multiarray` 找不到）
+> - `--runtime-hook hook-torch-preload.py` — **必须**，修复 Windows 上 c10.dll 崩溃（WinError 1114）
 
-> **Windows 用户注意：** 含 torch + PyQt5 的 EXE 打包后可能遇到 c10.dll 初始化失败（WinError 1114）。这是因为 PyInstaller 预加载 Qt DLL 时与 torch 冲突。`--runtime-hook hook-torch-preload.py` 通过 Windows API 强制预加载 c10.dll 来解决。拉源码打包时**必须带上这个参数**。
+产物在 `dist/NCM2FLAC.exe`。
 
 或直接跑：
 
