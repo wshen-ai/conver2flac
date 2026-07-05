@@ -1,4 +1,7 @@
 name: Build NCM2FLAC Windows Release
+# 新增：开放 Release 写入权限
+permissions:
+  contents: write
 on:
   push:
     tags:
