@@ -37,17 +37,11 @@ jobs:
             --hidden-import mutagen.mp3 `
             --hidden-import mutagen.id3 `
             ncm2flac_gui.py
-
-      # GitHub Windows虚拟机自带7z，路径固定无需安装
-      - name: Split archive into 90MB volumes
-        run: |
-          cd dist
-          "C:\Program Files\7-Zip\7z.exe" a -v90m NCM2FLAC.zip NCM2FLAC.exe
-
-      - name: Upload split archives to Release
+      - name: Upload EXE to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/NCM2FLAC.zip.*
+          files: dist/NCM2FLAC.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+     
