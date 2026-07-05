@@ -30,12 +30,21 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Download ffmpeg
+        run: |
+          curl -L -o ffmpeg.zip "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          7z x ffmpeg.zip -offmpeg_tmp
+          move ffmpeg_tmp\ffmpeg-*-essentials_build\bin\ffmpeg.exe .\ffmpeg.exe
+
       - name: Build EXE with PyInstaller
         run: |
           python -m PyInstaller `
             --clean --onefile --windowed `
             --name "NCM2FLAC" `
             --runtime-hook hook-torch-preload.py `
+            --add-binary "ffmpeg.exe;." `
+            --collect-data demucs `
+            --collect-all numpy `
             --hidden-import PyQt5.QtCore `
             --hidden-import PyQt5.QtGui `
             --hidden-import PyQt5.QtWidgets `
