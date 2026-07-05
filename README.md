@@ -65,22 +65,40 @@ Demucs（v4 "hybrid" 版本）融合了两大架构：
 | 分离人声（去伴奏） | 输出清唱音轨 |
 | 分离两轨（同时保留） | 人声 + 伴奏各一轨 |
 
-## 快速开始
+## 快速开始（四种方式）
 
-### 方式一：直接运行 EXE
+> 💡 v2.0+ EXE 自带 ffmpeg 和 AI 模型引擎，**无需安装任何东西**，下载双击即用。
 
-1. 从 [Releases](https://github.com/wshen-ai/conver2flac/releases) 下载最新版
-2. 解压后双击 `NCM2FLAC.exe`（确保 `ffmpeg.exe` 在同一目录）
+| 方式 | 适合 | 需要什么 |
+|------|------|----------|
+| ① 下载 EXE | 🟢 普通用户 | 什么都不用装 |
+| ② 源码运行 GUI | 🟡 开发者 | Python + `pip install -r requirements.txt` + ffmpeg 在 PATH |
+| ③ 源码打包 EXE | 🔴 发布者 | 同上 + 下载 ffmpeg.exe 到项目根目录 |
+| ④ 命令行 CLI | 🟡 脚本/AI 调用 | 同方式② |
+
+---
+
+### 方式一：下载 EXE（推荐 · 开箱即用）
+
+1. 从 [Releases](https://github.com/wshen-ai/conver2flac/releases) 下载最新版 `NCM2FLAC.exe`
+2. 双击运行——**无需安装 Python、ffmpeg、PyTorch，全部内嵌**
 3. 拖入任意音频文件，选择输出格式和码率
+4. AI 人声分离首次运行会自动下载模型（~80MB，仅一次）
 
-### 方式二：源码运行
+---
+
+### 方式二：源码运行（开发者）
 
 ```bash
 pip install -r requirements.txt
 python ncm2flac_gui.py
 ```
 
-### 方式三：源码打包 EXE
+> **前置要求：** ffmpeg 必须在系统 PATH 中（或同目录放 ffmpeg.exe）。源码不嵌入 ffmpeg。
+
+---
+
+### 方式三：源码打包 EXE（发布者）
 
 ```bash
 # 1. 准备 ffmpeg（必需）
@@ -123,7 +141,35 @@ python -m PyInstaller \
 BUILD_EXE.bat
 ```
 
-脚本会自动检测系统 ffmpeg 并复制到 `dist\` 目录。**EXE 运行时需要同目录有 ffmpeg.exe，或系统 PATH 可找到 ffmpeg。**
+> BUILD_EXE.bat 自动检查 ffmpeg.exe 是否存在，不存在会提示下载链接。
+
+---
+
+### 方式四：命令行 CLI（脚本/AI 调用）
+
+```bash
+# 基础转换
+python ncm2flac_cli.py song.flac -f mp3 -q 320
+
+# AI 人声分离
+python ncm2flac_cli.py song.mp3 -s no_vocals
+
+# 完整选项
+python ncm2flac_cli.py --help
+```
+
+支持所有 GUI 功能，适合批处理和 AI Agent 调用。
+
+---
+
+## 依赖汇总
+
+| 依赖 | 下载 EXE | 源码运行 | 源码打包 |
+|------|:--:|:--:|:--:|
+| Python 3.10+ | ❌ 已嵌入 | ✅ | ✅ |
+| PyTorch + Demucs | ❌ 已嵌入 | ✅ pip 安装 | ✅ pip 安装 |
+| ffmpeg | ❌ 已嵌入 | ⚠️ 需 PATH | ⚠️ 需下载到根目录 |
+| Demucs 模型 (~80MB) | 首次自动下载 | 首次自动下载 | 嵌入 EXE |
 
 ## 技术栈
 
