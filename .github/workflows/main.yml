@@ -50,6 +50,5 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_tag || github.ref_name }}
           files: dist/NCM2FLAC.exe
           overwrite_files: true
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
